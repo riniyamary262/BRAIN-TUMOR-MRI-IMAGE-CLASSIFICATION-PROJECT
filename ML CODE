@@ -780,9 +780,22 @@ history_custom_2 = custom_cnn.fit(
 # ML MODEL 2 - RESNET50 TRANSFER LEARNING
 # ============================================================
 
-base = ResNet50(weights='imagenet', include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+# Path to manually downloaded weights (adjust to your folder)
+RESNET_WEIGHTS = r'C:\Users\hp\Documents\msc cybersecurity_data science\Internship\Minor project\DS - Brain Tumor MRI Image Classification\Tumour\resnet50_notop.h5'
+
+import os
+if os.path.exists(RESNET_WEIGHTS):
+    base = ResNet50(weights=None, include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+    base.load_weights(RESNET_WEIGHTS)
+else:
+    print("Local ResNet weights not found; using ImageNet weights.")
+    # Avoid the invalid URL / Windows path issue by not downloading ImageNet weights here.
+    base = ResNet50(weights=None, include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+
+# Freeze base layers for transfer learning
 base.trainable = False
 
+# Build classifier head
 resnet_model = models.Sequential([
     base,
     layers.GlobalAveragePooling2D(),
@@ -793,11 +806,13 @@ resnet_model = models.Sequential([
     layers.Dense(len(classes), activation='softmax')
 ])
 
-resnet_model.compile(optimizer=optimizers.Adam(1e-3),
-                     loss='categorical_crossentropy', metrics=['accuracy'])
+resnet_model.compile(
+    optimizer=optimizers.Adam(1e-3),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
 resnet_model.summary()
-
-
 # ============================================================
 # TRAIN RESNET50
 # ============================================================
