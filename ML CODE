@@ -1,0 +1,936 @@
+# ============================================================
+# IMPORT LIBRARIES
+# ============================================================
+
+# Basic libraries
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+# Image processing
+import cv2
+from PIL import Image
+
+# Deep Learning
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, models, optimizers, callbacks
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications import ResNet50, MobileNetV2, InceptionV3, EfficientNetB0
+
+# Sklearn
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from sklearn.metrics import precision_score, recall_score, f1_score
+
+# Set random seeds for reproducibility
+np.random.seed(42)
+tf.random.set_seed(42)
+
+print("TensorFlow Version:", tf.__version__)
+print("GPU Available:", len(tf.config.list_physical_devices('GPU')) > 0)
+
+# Load Dataset
+
+DATASET_PATH = 'C:\\Users\\hp\\Documents\\msc cybersecurity_data science\\Internship\\Minor project\\DS - Brain Tumor MRI Image Classification\\Tumour'
+
+# Verify dataset exists
+if os.path.exists(DATASET_PATH):
+    print("Dataset found at:", DATASET_PATH)
+    print("Folders:", os.listdir(DATASET_PATH))
+else:
+    print("Dataset not found. Please check the path.")
+
+# ============================================================
+# DATASET FIRST LOOK (Auto-detects nested structure)
+# ============================================================
+
+def find_image_root(dataset_path):
+    """
+    Detects the correct root folder for ImageDataGenerator.
+    If dataset has train/test/valid subfolders, returns the train folder
+    (since ImageDataGenerator with validation_split needs a single root).
+    """
+    subfolders = [f for f in os.listdir(dataset_path)
+                  if os.path.isdir(os.path.join(dataset_path, f))]
+
+    # Check if subfolders contain images directly (flat structure)
+    def has_images(folder):
+        for f in os.listdir(folder):
+            if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                return True
+        return False
+
+    # Case 1: Flat structure (class folders contain images directly)
+    if any(has_images(os.path.join(dataset_path, f)) for f in subfolders):
+        return dataset_path, 'flat'
+
+    # Case 2: Nested structure (train/test/valid each with class folders)
+    for split in ['train', 'Train', 'TRAIN']:
+        candidate = os.path.join(dataset_path, split)
+        if os.path.exists(candidate):
+            return candidate, 'nested'
+
+    # Case 3: Unknown — return root
+    return dataset_path, 'unknown'
+
+
+IMAGE_ROOT, STRUCTURE = find_image_root(DATASET_PATH)
+print("=" * 60)
+print(f"Detected structure: {STRUCTURE}")
+print(f"Using image root: {IMAGE_ROOT}")
+print("=" * 60)
+
+# Now count images per class
+classes = []
+class_counts = {}
+
+for folder in sorted(os.listdir(IMAGE_ROOT)):
+    folder_path = os.path.join(IMAGE_ROOT, folder)
+    if os.path.isdir(folder_path):
+        count = len([f for f in os.listdir(folder_path)
+                     if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+        if count > 0:
+            classes.append(folder)
+            class_counts[folder] = count
+
+print("\nClasses found:", classes)
+print("\nClass-wise image counts:")
+for cls, cnt in class_counts.items():
+    print(f"  {cls}: {cnt}")
+
+total_images = sum(class_counts.values())
+print(f"\nTotal images in {IMAGE_ROOT}: {total_images}")
+
+# ============================================================
+# DATASET ROWS & COLUMNS COUNT
+# ============================================================
+
+print(f"Total images (rows): {total_images}")
+print(f"Number of classes (target column): {len(classes)}")
+print(f"Classes: {classes}")
+print(f"Image dimensions: variable, will be resized to 224x224x3")
+
+# ============================================================
+# DATASET INFO
+# ============================================================
+
+df_summary = pd.DataFrame({
+    'Class': list(class_counts.keys()),
+    'Image_Count': list(class_counts.values())
+})
+df_summary['Percentage'] = (df_summary['Image_Count'] / total_images * 100).round(2)
+
+print(df_summary.to_string(index=False))
+
+min_count = min(class_counts.values())
+max_count = max(class_counts.values())
+imbalance_ratio = max_count / min_count
+print(f"\nClass Imbalance Ratio: {imbalance_ratio:.2f}")
+if imbalance_ratio > 1.5:
+    print("Dataset is imbalanced -> class weights will be used")
+else:
+    print("Dataset is relatively balanced")
+
+# ============================================================
+# DUPLICATE VALUE CHECK
+# ============================================================
+
+all_files = []
+for cls in classes:
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    files = [f for f in os.listdir(cls_path) if f.lower().endswith(('.png','.jpg','.jpeg'))]
+    all_files.extend(files)
+
+duplicates = len(all_files) - len(set(all_files))
+print(f"Total files: {len(all_files)}")
+print(f"Unique filenames: {len(set(all_files))}")
+print(f"Duplicate filenames: {duplicates}")
+
+
+
+# ============================================================
+# MISSING VALUES / NULL VALUES COUNT
+# ============================================================
+
+corrupted = 0
+for cls in classes:
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    for f in os.listdir(cls_path):
+        if f.lower().endswith(('.png','.jpg','.jpeg')):
+            img_path = os.path.join(cls_path, f)
+            img = cv2.imread(img_path)
+            if img is None:
+                corrupted += 1
+
+print(f"Corrupted / unreadable images: {corrupted}")
+print("No missing values in the traditional sense (image dataset).")
+
+
+# Visualizing the missing values
+
+# ============================================================
+# VISUALIZING MISSING VALUES
+# ============================================================
+
+# Since this is an image dataset, we visualize class completeness
+plt.figure(figsize=(8,4))
+plt.bar(df_summary['Class'], df_summary['Image_Count'], color='steelblue', edgecolor='black')
+plt.title('Image Count per Class (Missing Value Check)', fontweight='bold')
+plt.xlabel('Class')
+plt.ylabel('Count')
+plt.tight_layout()
+plt.show()
+
+
+
+# ============================================================
+# DATASET COLUMNS
+# ============================================================
+
+# For an image dataset, variables are: image pixels + label
+print("Variables in the dataset:")
+print("1. Image (pixel matrix of shape H x W x 3)")
+print("2. Label (one of: Glioma, Meningioma, Pituitary, No Tumor)")
+
+
+# Dataset Describe
+
+# ============================================================
+# DATASET DESCRIBE
+# ============================================================
+
+# Describe numeric summary of class counts
+print(df_summary.describe())
+
+# ============================================================
+# UNIQUE VALUES FOR EACH VARIABLE
+# ============================================================
+
+print("Unique classes (target variable):", classes)
+print("Number of unique classes:", len(classes))
+
+# ============================================================
+# DATA WRANGLING
+# ============================================================
+
+data = []
+for cls in classes:
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    for f in os.listdir(cls_path):
+        if f.lower().endswith(('.png','.jpg','.jpeg')):
+            data.append({
+                'filepath': os.path.join(cls_path, f),
+                'label': cls
+            })
+
+df = pd.DataFrame(data)
+print("Dataframe shape:", df.shape)
+print(df.head())
+print("\nLabel distribution:")
+print(df['label'].value_counts())
+
+
+# ============================================================
+# CHART 1 - CLASS DISTRIBUTION BAR CHART
+# ============================================================
+
+plt.figure(figsize=(10,6))
+colors = plt.cm.Set3(np.linspace(0,1,len(classes)))
+bars = plt.bar(class_counts.keys(), class_counts.values(), color=colors, edgecolor='black')
+for bar, cnt in zip(bars, class_counts.values()):
+    plt.text(bar.get_x()+bar.get_width()/2, bar.get_height()+20, str(cnt),
+             ha='center', fontweight='bold')
+plt.title('Class Distribution of Brain Tumor MRI Dataset', fontsize=14, fontweight='bold')
+plt.xlabel('Tumor Type')
+plt.ylabel('Number of Images')
+plt.tight_layout()
+plt.show()
+
+# ============================================================
+# CHART 2 - PIE CHART OF CLASS PROPORTIONS
+# ============================================================
+
+plt.figure(figsize=(8,8))
+plt.pie(class_counts.values(), labels=class_counts.keys(), autopct='%1.1f%%',
+        colors=plt.cm.Pastel1(np.linspace(0,1,len(classes))), startangle=140)
+plt.title('Class Proportion of Brain Tumor Types', fontsize=14, fontweight='bold')
+plt.show()
+
+
+# ============================================================
+# CHART 3 - SAMPLE IMAGES FROM EACH CLASS
+# ============================================================
+
+fig, axes = plt.subplots(len(classes), 4, figsize=(16, 4*len(classes)))
+if len(classes) == 1:
+    axes = np.expand_dims(axes, 0)
+
+for i, cls in enumerate(classes):
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    imgs = [f for f in os.listdir(cls_path) if f.lower().endswith(('.png','.jpg','.jpeg'))][:4]
+    for j, img_name in enumerate(imgs):
+        img = cv2.imread(os.path.join(cls_path, img_name))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        axes[i, j].imshow(img)
+        axes[i, j].axis('off')
+        if j == 0:
+            axes[i, j].set_title(cls, fontsize=12, fontweight='bold')
+plt.suptitle('Sample MRI Images per Class', fontsize=16, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# CHART 4 - IMAGE HEIGHT DISTRIBUTION
+# ============================================================
+
+heights, widths = [], []
+for cls in classes:
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    for f in os.listdir(cls_path)[:100]:
+        if f.lower().endswith(('.png','.jpg','.jpeg')):
+            img = cv2.imread(os.path.join(cls_path, f))
+            if img is not None:
+                heights.append(img.shape[0])
+                widths.append(img.shape[1])
+
+plt.figure(figsize=(10,4))
+plt.hist(heights, bins=30, color='steelblue', edgecolor='black')
+plt.title('Image Height Distribution', fontweight='bold')
+plt.xlabel('Height (pixels)')
+plt.ylabel('Frequency')
+plt.show()
+
+# ============================================================
+# CHART 5 - IMAGE WIDTH DISTRIBUTION
+# ============================================================
+
+plt.figure(figsize=(10,4))
+plt.hist(widths, bins=30, color='coral', edgecolor='black')
+plt.title('Image Width Distribution', fontweight='bold')
+plt.xlabel('Width (pixels)')
+plt.ylabel('Frequency')
+plt.show()
+
+# ============================================================
+# CHART 6 - AVERAGE PIXEL INTENSITY PER CLASS
+# ============================================================
+
+avg_intensity = {}
+for cls in classes:
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    vals = []
+    for f in os.listdir(cls_path)[:50]:
+        if f.lower().endswith(('.png','.jpg','.jpeg')):
+            img = cv2.imread(os.path.join(cls_path, f), cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                vals.append(img.mean())
+    avg_intensity[cls] = np.mean(vals)
+
+plt.figure(figsize=(8,5))
+plt.bar(avg_intensity.keys(), avg_intensity.values(), color='mediumseagreen', edgecolor='black')
+plt.title('Average Pixel Intensity per Class', fontweight='bold')
+plt.ylabel('Mean Intensity')
+plt.show()
+
+
+# ============================================================
+# CHART 7 - RGB CHANNEL DISTRIBUTION
+# ============================================================
+
+img = cv2.imread(df['filepath'].iloc[0])
+img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+fig, axes = plt.subplots(1, 3, figsize=(15,4))
+for i, color in enumerate(['R','G','B']):
+    axes[i].hist(img[:,:,i].ravel(), bins=50, color=color.lower(), alpha=0.7)
+    axes[i].set_title(f'{color} Channel Distribution')
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# CHART 8 - BOXPLOT OF IMAGE INTENSITY BY CLASS
+# ============================================================
+
+intensity_data = []
+for cls in classes:
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    for f in os.listdir(cls_path)[:50]:
+        if f.lower().endswith(('.png','.jpg','.jpeg')):
+            img = cv2.imread(os.path.join(cls_path, f), cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                intensity_data.append({'Class': cls, 'Intensity': img.mean()})
+
+int_df = pd.DataFrame(intensity_data)
+sns.boxplot(x='Class', y='Intensity', data=int_df)
+plt.title('Intensity Distribution by Class', fontweight='bold')
+plt.show()
+
+# ============================================================
+# CHART 9 - IMAGE COUNT PER CLASS (HORIZONTAL BAR)
+# ============================================================
+
+plt.figure(figsize=(10,5))
+plt.barh(list(class_counts.keys()), list(class_counts.values()), color='mediumpurple', edgecolor='black')
+plt.title('Horizontal Bar of Class Counts', fontweight='bold')
+plt.xlabel('Count')
+plt.ylabel('Class')
+plt.show()
+
+
+# ============================================================
+# CHART 10 - CUMULATIVE DISTRIBUTION OF IMAGE SIZES
+# ============================================================
+
+all_sizes = heights + widths
+plt.figure(figsize=(10,4))
+plt.hist(all_sizes, bins=40, cumulative=True, color='teal', edgecolor='black')
+plt.title('Cumulative Distribution of Image Dimensions', fontweight='bold')
+plt.xlabel('Pixels')
+plt.ylabel('Cumulative Count')
+plt.show()
+
+
+# ============================================================
+# CHART 11 - AUGMENTED SAMPLE IMAGES
+# ============================================================
+
+# Create a quick augmentation demo
+sample_img = cv2.imread(df['filepath'].iloc[0])
+sample_img = cv2.cvtColor(sample_img, cv2.COLOR_BGR2RGB)
+sample_img = cv2.resize(sample_img, (224,224))
+
+datagen = ImageDataGenerator(rotation_range=20, horizontal_flip=True,
+                              zoom_range=0.1, brightness_range=[0.8,1.2])
+sample_arr = np.expand_dims(sample_img, 0)
+aug_iter = datagen.flow(sample_arr, batch_size=1)
+
+fig, axes = plt.subplots(1, 5, figsize=(15,3))
+for i in range(5):
+    aug_img = next(aug_iter)[0].astype('uint8')
+    axes[i].imshow(aug_img)
+    axes[i].axis('off')
+plt.suptitle('Augmented Versions of One MRI Image', fontweight='bold')
+plt.show()
+
+
+# ============================================================
+# CHART 12 - GRAYSCALE HISTOGRAM OF ONE IMAGE PER CLASS
+# ============================================================
+
+fig, axes = plt.subplots(1, len(classes), figsize=(16,4))
+if len(classes) == 1:
+    axes = [axes]
+
+for i, cls in enumerate(classes):
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    f = os.listdir(cls_path)[0]
+    img = cv2.imread(os.path.join(cls_path, f), cv2.IMREAD_GRAYSCALE)
+    axes[i].hist(img.ravel(), bins=50, color='gray')
+    axes[i].set_title(cls)
+plt.suptitle('Grayscale Histograms per Class', fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+# ============================================================
+# CHART 13 - CLASS COUNT HEATMAP STYLE
+# ============================================================
+
+plt.figure(figsize=(6,4))
+sns.heatmap(pd.DataFrame([class_counts]), annot=True, fmt='d', cmap='YlGnBu')
+plt.title('Class Counts Heatmap', fontweight='bold')
+plt.show()
+
+
+# ============================================================
+# CHART 14 - CORRELATION HEATMAP
+# ============================================================
+
+meta = []
+for cls in classes:
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    for f in os.listdir(cls_path)[:50]:
+        if f.lower().endswith(('.png','.jpg','.jpeg')):
+            img = cv2.imread(os.path.join(cls_path, f), cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                meta.append({'height': img.shape[0], 'width': img.shape[1],
+                             'mean_intensity': img.mean(), 'std_intensity': img.std()})
+
+meta_df = pd.DataFrame(meta)
+plt.figure(figsize=(8,6))
+sns.heatmap(meta_df.corr(), annot=True, cmap='coolwarm', fmt='.2f')
+plt.title('Correlation Heatmap of Image Metadata', fontweight='bold')
+plt.show()
+
+
+# ============================================================
+# CHART 15 - PAIR PLOT
+# ============================================================
+
+sns.pairplot(meta_df, diag_kind='kde', plot_kws={'alpha':0.4})
+plt.suptitle('Pair Plot of Image Metadata', y=1.02, fontweight='bold')
+plt.show()
+
+
+# ============================================================
+# HYPOTHESIS TEST 1 - T-TEST ON MEAN INTENSITY
+# ============================================================
+
+from scipy import stats
+
+glioma_int = []
+notumor_int = []
+
+for cls, arr in [('glioma', glioma_int), ('notumor', notumor_int)]:
+    # Try both 'glioma' and 'Glioma' (case-insensitive match)
+    matched = [c for c in classes if c.lower() == cls]
+    if not matched:
+        continue
+    cls_path = os.path.join(IMAGE_ROOT, matched[0])
+    for f in os.listdir(cls_path)[:100]:
+        if f.lower().endswith(('.png','.jpg','.jpeg')):
+            img = cv2.imread(os.path.join(cls_path, f), cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                arr.append(img.mean())
+
+if len(glioma_int) > 1 and len(notumor_int) > 1:
+    t_stat, p_val = stats.ttest_ind(glioma_int, notumor_int, equal_var=False)
+    print(f"T-statistic: {t_stat:.4f}")
+    print(f"P-value: {p_val:.4f}")
+    if p_val < 0.05:
+        print("Reject H0 -> Significant difference exists.")
+    else:
+        print("Fail to reject H0 -> No significant difference.")
+else:
+    print("Not enough samples to perform t-test. Check class names.")
+
+
+# ============================================================
+# HYPOTHESIS TEST 2 - ONE-WAY ANOVA ON IMAGE HEIGHT
+# ============================================================
+
+height_groups = []
+for cls in classes:
+    cls_path = os.path.join(IMAGE_ROOT, cls)
+    vals = []
+    for f in os.listdir(cls_path)[:50]:
+        if f.lower().endswith(('.png','.jpg','.jpeg')):
+            img = cv2.imread(os.path.join(cls_path, f))
+            if img is not None:
+                vals.append(img.shape[0])
+    height_groups.append(vals)
+
+if all(len(g) > 1 for g in height_groups):
+    f_stat, p_val = stats.f_oneway(*height_groups)
+    print(f"F-statistic: {f_stat:.4f}")
+    print(f"P-value: {p_val:.4f}")
+    if p_val < 0.05:
+        print("Reject H0 -> Heights differ across classes.")
+    else:
+        print("Fail to reject H0 -> Heights are similar across classes.")
+else:
+    print("Not enough samples for ANOVA.")
+
+
+# ============================================================
+# HYPOTHESIS TEST 3 - CHI-SQUARE GOODNESS OF FIT
+# ============================================================
+
+tumor_count = sum(v for k, v in class_counts.items() if k.lower() != 'notumor')
+notumor_count = class_counts.get('notumor', 0)
+
+observed = [tumor_count, notumor_count]
+expected = [sum(observed)/2, sum(observed)/2]
+
+chi2, p_val = stats.chisquare(observed, expected)
+print(f"Chi-square: {chi2:.4f}")
+print(f"P-value: {p_val:.4f}")
+if p_val < 0.05:
+    print("Reject H0 -> Dataset is NOT balanced.")
+else:
+    print("Fail to reject H0 -> Dataset is balanced.")
+
+
+# ============================================================
+# HANDLING MISSING VALUES
+# ============================================================
+
+# No traditional missing values; check corrupted images
+corrupted = 0
+for path in df['filepath']:
+    if cv2.imread(path) is None:
+        corrupted += 1
+print(f"Corrupted images: {corrupted}")
+
+
+# ============================================================
+# HANDLING OUTLIERS
+# ============================================================
+
+intensities = []
+for path in df['filepath'][:200]:
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is not None:
+        intensities.append(img.mean())
+
+q1, q3 = np.percentile(intensities, [25, 75])
+iqr = q3 - q1
+lower = q1 - 1.5*iqr
+upper = q3 + 1.5*iqr
+outliers = [x for x in intensities if x < lower or x > upper]
+print(f"Outliers detected: {len(outliers)} out of {len(intensities)}")
+
+
+# ============================================================
+# CATEGORICAL ENCODING
+# ============================================================
+
+# Labels will be one-hot encoded via ImageDataGenerator's class_mode='categorical'
+print("Labels will be one-hot encoded during data loading.")
+print("Classes:", classes)
+
+# ============================================================
+# FEATURE MANIPULATION & SELECTION
+# ============================================================
+
+# Features are learned automatically by CNN; no manual feature engineering needed.
+print("CNN will automatically learn features from raw pixels.")
+
+
+# ============================================================
+# DATA SCALING
+# ============================================================
+
+print("Scaling method: Min-Max normalization via rescale=1./255.")
+
+
+# ============================================================
+# DATA SPLITTING (uses IMAGE_ROOT = .../Tumour/train)
+# ============================================================
+
+IMG_SIZE = 224
+BATCH_SIZE = 32
+
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=20,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    shear_range=0.1,
+    zoom_range=0.1,
+    horizontal_flip=True,
+    brightness_range=[0.8, 1.2],
+    fill_mode='nearest',
+    validation_split=0.2
+)
+
+val_datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
+
+train_generator = train_datagen.flow_from_directory(
+    IMAGE_ROOT,
+    target_size=(IMG_SIZE, IMG_SIZE),     # <-- both must be IMG_SIZE
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    subset='training',
+    shuffle=True,
+    seed=42
+)
+
+val_generator = val_datagen.flow_from_directory(
+    IMAGE_ROOT,
+    target_size=(IMG_SIZE, IMG_SIZE),     # <-- both must be IMG_SIZE
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    subset='validation',
+    shuffle=False,
+    seed=42
+)
+
+print("Train samples:", train_generator.samples)
+print("Val samples:", val_generator.samples)
+print("Class indices:", train_generator.class_indices)
+
+
+# ============================================================
+# HANDLING IMBALANCED DATASET
+# ============================================================
+
+from sklearn.utils.class_weight import compute_class_weight
+
+class_weights = compute_class_weight(
+    class_weight='balanced',
+    classes=np.unique(train_generator.classes),
+    y=train_generator.classes
+)
+class_weight_dict = dict(enumerate(class_weights))
+print("Class weights:", class_weight_dict)
+
+# ============================================================
+# ML MODEL 1 - CUSTOM CNN
+# ============================================================
+
+def build_custom_cnn(input_shape, num_classes):
+    model = models.Sequential([
+        layers.Conv2D(32, (3,3), activation='relu', padding='same', input_shape=input_shape),
+        layers.BatchNormalization(),
+        layers.Conv2D(32, (3,3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2,2)),
+        layers.Dropout(0.25),
+
+        layers.Conv2D(64, (3,3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.Conv2D(64, (3,3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2,2)),
+        layers.Dropout(0.25),
+
+        layers.Conv2D(128, (3,3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.Conv2D(128, (3,3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2,2)),
+        layers.Dropout(0.25),
+
+        layers.Conv2D(256, (3,3), activation='relu', padding='same'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2,2)),
+        layers.Dropout(0.25),
+
+        layers.GlobalAveragePooling2D(),
+        layers.Dense(512, activation='relu'),
+        layers.BatchNormalization(),
+        layers.Dropout(0.5),
+        layers.Dense(256, activation='relu'),
+        layers.BatchNormalization(),
+        layers.Dropout(0.5),
+        layers.Dense(num_classes, activation='softmax')
+    ])
+    return model
+
+custom_cnn = build_custom_cnn((IMG_SIZE, IMG_SIZE, 3), len(classes))
+custom_cnn.compile(optimizer=optimizers.Adam(1e-3),
+                   loss='categorical_crossentropy', metrics=['accuracy'])
+custom_cnn.summary()
+
+
+# ============================================================
+# TRAIN CUSTOM CNN
+# ============================================================
+
+cb = [
+    callbacks.EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True),
+    callbacks.ModelCheckpoint('custom_cnn_best.h5', monitor='val_accuracy', save_best_only=True),
+    callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=4, min_lr=1e-7)
+]
+
+history_custom = custom_cnn.fit(
+    train_generator, epochs=30, validation_data=val_generator,
+    class_weight=class_weight_dict, callbacks=cb, verbose=1
+)
+
+
+# ============================================================
+# CUSTOM CNN EVALUATION
+# ============================================================
+
+def plot_history(history, name):
+    fig, ax = plt.subplots(1, 2, figsize=(14,5))
+    ax[0].plot(history.history['accuracy'], label='train')
+    ax[0].plot(history.history['val_accuracy'], label='val')
+    ax[0].set_title(f'{name} Accuracy'); ax[0].legend()
+    ax[1].plot(history.history['loss'], label='train')
+    ax[1].plot(history.history['val_loss'], label='val')
+    ax[1].set_title(f'{name} Loss'); ax[1].legend()
+    plt.show()
+
+plot_history(history_custom, 'Custom CNN')
+
+# Evaluate
+val_generator.reset()
+preds = custom_cnn.predict(val_generator, verbose=0)
+y_pred = np.argmax(preds, axis=1)
+y_true = val_generator.classes
+
+print("Accuracy:", accuracy_score(y_true, y_pred))
+print("Precision:", precision_score(y_true, y_pred, average='weighted'))
+print("Recall:", recall_score(y_true, y_pred, average='weighted'))
+print("F1:", f1_score(y_true, y_pred, average='weighted'))
+print("\n", classification_report(y_true, y_pred, target_names=list(train_generator.class_indices.keys())))
+
+# ============================================================
+# HYPERPARAMETER TUNING (Simplified)
+# ============================================================
+
+# Example: try a smaller learning rate
+custom_cnn.compile(optimizer=optimizers.Adam(5e-4),
+                   loss='categorical_crossentropy', metrics=['accuracy'])
+history_custom_2 = custom_cnn.fit(
+    train_generator, epochs=10, validation_data=val_generator,
+    class_weight=class_weight_dict, verbose=1
+
+
+
+# ============================================================
+# ML MODEL 2 - RESNET50 TRANSFER LEARNING
+# ============================================================
+
+base = ResNet50(weights='imagenet', include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+base.trainable = False
+
+resnet_model = models.Sequential([
+    base,
+    layers.GlobalAveragePooling2D(),
+    layers.BatchNormalization(),
+    layers.Dropout(0.5),
+    layers.Dense(256, activation='relu'),
+    layers.Dropout(0.3),
+    layers.Dense(len(classes), activation='softmax')
+])
+
+resnet_model.compile(optimizer=optimizers.Adam(1e-3),
+                     loss='categorical_crossentropy', metrics=['accuracy'])
+resnet_model.summary()
+
+
+# ============================================================
+# TRAIN RESNET50
+# ============================================================
+
+history_resnet = resnet_model.fit(
+    train_generator, epochs=20, validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=[callbacks.EarlyStopping(patience=5, restore_best_weights=True),
+               callbacks.ModelCheckpoint('resnet_best.h5', save_best_only=True)],
+    verbose=1
+)
+plot_history(history_resnet, 'ResNet50')
+
+
+val_generator.reset()
+preds = resnet_model.predict(val_generator, verbose=0)
+y_pred = np.argmax(preds, axis=1)
+y_true = val_generator.classes
+print("Accuracy:", accuracy_score(y_true, y_pred))
+print("F1:", f1_score(y_true, y_pred, average='weighted'))
+
+
+# Unfreeze top 30 layers
+for layer in base.layers[-30:]:
+    layer.trainable = True
+resnet_model.compile(optimizer=optimizers.Adam(1e-5),
+                     loss='categorical_crossentropy', metrics=['accuracy'])
+history_resnet_ft = resnet_model.fit(
+    train_generator, epochs=10, validation_data=val_generator,
+    class_weight=class_weight_dict, verbose=1
+)
+
+# ============================================================
+# ML MODEL 3 - EFFICIENTNETB0
+# ============================================================
+
+base_eff = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+base_eff.trainable = False
+
+eff_model = models.Sequential([
+    base_eff,
+    layers.GlobalAveragePooling2D(),
+    layers.BatchNormalization(),
+    layers.Dropout(0.5),
+    layers.Dense(256, activation='relu'),
+    layers.Dropout(0.3),
+    layers.Dense(len(classes), activation='softmax')
+])
+eff_model.compile(optimizer=optimizers.Adam(1e-3),
+                  loss='categorical_crossentropy', metrics=['accuracy'])
+eff_model.summary()
+
+
+# ============================================================
+# TRAIN EFFICIENTNETB0
+# ============================================================
+
+history_eff = eff_model.fit(
+    train_generator, epochs=20, validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=[callbacks.EarlyStopping(patience=5, restore_best_weights=True),
+               callbacks.ModelCheckpoint('eff_best.h5', save_best_only=True)],
+    verbose=1
+)
+plot_history(history_eff, 'EfficientNetB0')
+
+
+val_generator.reset()
+preds = eff_model.predict(val_generator, verbose=0)
+y_pred = np.argmax(preds, axis=1)
+y_true = val_generator.classes
+print("Accuracy:", accuracy_score(y_true, y_pred))
+print("F1:", f1_score(y_true, y_pred, average='weighted'))
+
+val_generator.reset()
+preds = eff_model.predict(val_generator, verbose=0)
+y_pred = np.argmax(preds, axis=1)
+y_true = val_generator.classes
+print("Accuracy:", accuracy_score(y_true, y_pred))
+print("F1:", f1_score(y_true, y_pred, average='weighted'))
+
+for layer in base_eff.layers[-20:]:
+    layer.trainable = True
+eff_model.compile(optimizer=optimizers.Adam(1e-5),
+                  loss='categorical_crossentropy', metrics=['accuracy'])
+history_eff_ft = eff_model.fit(
+    train_generator, epochs=10, validation_data=val_generator,
+    class_weight=class_weight_dict, verbose=1
+)
+
+
+# ============================================================
+# SAVE BEST MODEL
+# ============================================================
+
+eff_model.save('best_brain_tumor_model.h5')
+print("Saved as best_brain_tumor_model.h5")
+
+# Save class indices
+import json
+with open('class_indices.json', 'w') as f:
+    json.dump(train_generator.class_indices, f)
+print("Class indices saved.")
+
+# ============================================================
+# LOAD MODEL AND PREDICT
+# ============================================================
+
+loaded_model = tf.keras.models.load_model('best_brain_tumor_model.h5')
+print("Loaded successfully.")
+
+# Predict on one image
+test_img = cv2.imread(df['filepath'].iloc[0])
+test_img = cv2.cvtColor(test_img, cv2.COLOR_BGR2RGB)
+test_img = cv2.resize(test_img, (IMG_SIZE, IMG_SIZE)) / 255.0
+test_img = np.expand_dims(test_img, 0)
+pred = loaded_model.predict(test_img)
+predicted_class = list(train_generator.class_indices.keys())[np.argmax(pred)]
+print("Predicted class:", predicted_class)
+
+
+
+
+
+
+)
+
+
+
+
+
+
+
+
+
+
