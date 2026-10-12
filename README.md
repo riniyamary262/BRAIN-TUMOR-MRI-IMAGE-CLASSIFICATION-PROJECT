@@ -25,17 +25,52 @@ Brain tumors are abnormal growths of cells in the brain that can be benign or ma
 The problem is to build an automated, accurate, and reliable deep learning system that can classify brain MRI images into four categories — **Glioma, Meningioma, Pituitary tumor, and No Tumor** — using both custom CNN architectures and transfer learning models, and to deploy the best-performing model as an interactive web application for real-world use.
 
 
-# Brain Tumor MRI Image Classification
+## Brain Tumor MRI Image Classification
 
 Deep learning project classifying brain MRI images into Glioma, Meningioma, Pituitary, and No Tumor.
 
+
 ## Dataset
-Brain Tumor MRI Multi-Class Dataset (~7000+ images)
+- **Source**: Brain Tumor MRI Multi-Class Dataset
+- **Classes**: Glioma, Meningioma, Pituitary, No Tumor
+- **Total Images**: ~7,000+
+
+## Features
+- Custom CNN architecture with batch normalization and dropout
+- Transfer learning with ResNet50, MobileNetV2, EfficientNetB0
+- Data augmentation for improved generalization
+- Comprehensive model evaluation and comparison
+- Interactive Streamlit web application
 
 ## Models
 - Custom CNN
 - ResNet50
 - EfficientNetB0 (best)
+
+## Model Performance
+Model	Accuracy	Precision	Recall	F1-Score
+Custom CNN	~92%	~91%	~92%	~91%
+ResNet50	~95%	~95%	~95%	~95%
+MobileNetV2	~94%	~94%	~94%	~94%
+EfficientNetB0	~96%	~96%	~96%	~96%
+
+## Technologies Used
+- TensorFlow/Keras
+- OpenCV
+- Streamlit
+- NumPy, Pandas
+- Matplotlib, Seaborn
+
+## Results
+- Best performing model: EfficientNetB0 with ~96% accuracy
+- Streamlit app for real-time predictions
+- Comprehensive evaluation with confusion matrices
+
+## Future Work
+- Add more tumor subtypes
+- Implement Grad-CAM for interpretability
+- Deploy on cloud platform
+- Add patient data management
 
 ## Run
 pip install -r requirements.txt
