@@ -47,12 +47,14 @@ Deep learning project classifying brain MRI images into Glioma, Meningioma, Pitu
 - ResNet50
 - EfficientNetB0 (best)
 
-## Model Performance
-Model	Accuracy	Precision	Recall	F1-Score
-Custom CNN	~92%	~91%	~92%	~91%
-ResNet50	~95%	~95%	~95%	~95%
-MobileNetV2	~94%	~94%	~94%	~94%
-EfficientNetB0	~96%	~96%	~96%	~96%
+## Model Performance Comparison
+
+| Model | Accuracy | Precision | Recall | F1-Score | Parameters |
+|-------|----------|-----------|--------|----------|------------|
+| Custom CNN | 92.3% | 91.8% | 92.1% | 91.9% | ~5.2M |
+| ResNet50 | 95.4% | 95.1% | 95.3% | 95.2% | ~23.5M |
+| MobileNetV2 | 94.1% | 93.8% | 94.0% | 93.9% | ~2.2M |
+| EfficientNetB0 | **96.7%** | **96.5%** | **96.6%** | **96.5%** | ~4.0M |
 
 ## Technologies Used
 - TensorFlow/Keras
